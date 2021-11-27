@@ -63,49 +63,60 @@ def process_line(line):
     # 4. We return res
     return res
 
-
-#filter should be based on weekdays,time,latitude,longitudte range
-def filter_weekday_data(timestamp_str, hours_list)->bool:
-   recorded_time = datetime.datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")   
-   if(recorded_time.weekday()>4 or f'{recorded_time.hour:02}' not in hours_list):         
-      return False 
-   return True
-
 # ------------------------------------------
 # FUNCTION my_model
 # ------------------------------------------
-def my_model(ssc,
-             monitoring_dir,
+def my_model(ssc, 
+             monitoring_dir, 
              time_step_interval,
-             north,
-             east,
-             south,
-             west,
-             hours_list
+             current_time,
+             seconds_horizon
             ):
-
-    # 1. Operation C1: 'textFileStream'
+    
+    # 1. Operation C1: 'textFileStream' to load the dataset into a DStream
     inputDStream = ssc.textFileStream(monitoring_dir)
 
-    # 2. Operation T1: flatMap
-    allWordsDStream = inputDStream.map(process_line)
-
-    filterDStream = allWordsDStream.filter(lambda row:south<=row[5]<=north and west<=row[4]<=east)\
-                                   .filter(lambda row:filter_weekday_data(row[0],hours_list))
-    
-
-    presolDStream = filterDStream.map(lambda row:(datetime.datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S").strftime('%H'),row[3]))\
-                                 .groupByKey()\
-                                 .map(lambda row:(row[0],list(row[1])))\
-                                 .map(lambda row: \
-                                    (row[0], \
-                                     round((row[1].count(1)/len(row[1]))*100,2),\
-                                     len(row[1]),row[1].count(1)))
-                               
-                               
-    solutionDStream = presolDStream.transform( lambda rdd: rdd.sortBy(lambda row:row[1],ascending=False) )
     # ---------------------------------------
+    # TO BE COMPLETED
+    # ---------------------------------------
+    star_time = datetime.datetime.strptime(current_time, "%Y-%m-%d %H:%M:%S")
+    cutoff_time = star_time + datetime.timedelta(seconds=seconds_horizon)
 
+    rawDStream = inputDStream.map(process_line)
+    
+    #Filter based on atSTop
+    #select vechile and closer stop column only
+    busStoppedDStream = rawDStream.filter(lambda row:row[9]==1)\
+                          .map(lambda row:(datetime.datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S"),row[8],row[7]))
+                          
+    # filter the row which satisfy the timing windows criteria
+    finalfilteredDStream = busStoppedDStream.filter(lambda row:star_time<=row[0]<=cutoff_time)      
+    
+    # form touple of busStop and vehicle Id
+    busstopVechileDStream = finalfilteredDStream.map(lambda row:(row[1],row[2]))  
+    
+    #Sort the list of vehicle for individual group
+    busstopgroupedDStream = busstopVechileDStream.groupByKey()\
+                                         .map(lambda row:(row[0],sorted(list(set(row[1])))))
+                                         #.map(lambda row:(len(row[1]),(row[0],row[1])))  
+                                         
+    #Pesisting the RDD as it will be used later
+    busstopgroupedDStream.persist(pyspark.StorageLevel.MEMORY_AND_DISK)       
+    
+    # calculate the maximum length of list
+    lenDStream = busstopgroupedDStream.map(lambda row:(1,len(row[1])))
+     
+    len1DStream = lenDStream.reduceByKey(lambda x,y: x if x>y else y)\
+                            .map(lambda row:(row[1],row[0])) 
+                            
+    regrpbusstopgroupedDStream = busstopgroupedDStream.map(lambda row:(len(row[1]),(row[0],row[1])))                    
+    # filterout the row whose list length is equal to maximum length                            
+    joinedDStream = len1DStream.join(regrpbusstopgroupedDStream)
+    
+    presolutionDStream = joinedDStream.map(lambda row:row[1][1])
+    
+    solutionDStream = presolutionDStream.transform(lambda rdd:rdd.sortBy(lambda row:row[0]))
+    
     # Operation A1: 'pprint' to get all results
     solutionDStream.pprint()
 
@@ -196,24 +207,18 @@ def streaming_simulation(local_False_databricks_True,
 def create_ssc(sc,
                time_step_interval,
                monitoring_dir,
-               north,
-               east,
-               south,
-               west,
-               hours_list
+               current_time,
+               seconds_horizon
               ):
     # 1. We create the new Spark Streaming context acting every time_step_interval.
     ssc = pyspark.streaming.StreamingContext(sc, time_step_interval)
 
     # 2. We model the data processing to be done each time_step_interval.
-    my_model(ssc,
-             monitoring_dir,
+    my_model(ssc, 
+             monitoring_dir, 
              time_step_interval,
-             north,
-             east,
-             south,
-             west,
-             hours_list
+             current_time,
+             seconds_horizon
             )
 
     # 3. We return the ssc configured and modelled.
@@ -229,11 +234,8 @@ def my_main(sc,
             checkpoint_dir,
             time_step_interval,
             verbose,
-            north,
-            east,
-            south,
-            west,
-            hours_list
+            current_time,
+            seconds_horizon
            ):
 
     # 1. We get the names of the files of our dataset
@@ -245,11 +247,8 @@ def my_main(sc,
                                                                lambda: create_ssc(sc,
                                                                                   time_step_interval,
                                                                                   monitoring_dir,
-                                                                                  north,
-                                                                                  east,
-                                                                                  south,
-                                                                                  west,
-                                                                                  hours_list
+                                                                                  current_time,
+                                                                                  seconds_horizon
                                                                                  )
                                                                )
 
@@ -290,11 +289,8 @@ if __name__ == '__main__':
     # 1. We use as many input arguments as needed
 
     # 1.1 We use as many input arguments as needed
-    north = 53.3702027
-    east = -6.2043634
-    south = 53.3343619
-    west = -6.2886331
-    hours_list = ["07", "08", "09"]
+    current_time = "2013-01-07 06:30:00"
+    seconds_horizon = 1800
 
     # 1.2. We specify the time interval each of our micro-batches (files) appear for its processing.
     time_step_interval = 5
@@ -306,23 +302,22 @@ if __name__ == '__main__':
     local_False_databricks_True = False
 
     # 3. We set the path to my_dataset, my_monitoring, my_checkpoint and my_result
-    #my_local_path = "../../../../3_Code_Examples/L07-23_Spark_Environment/"
-    #my_databricks_path = "/"
+    my_local_path = "../../../../3_Code_Examples/L07-23_Spark_Environment/"
+    my_databricks_path = "/"
 
-    source_dir = "my_datasets/A02_ex1_micro_dataset_1/"    
+    source_dir = "my_datasets/A02_ex3_micro_dataset_1/"    
     monitoring_dir = "my_datasets/my_monitoring/"
     checkpoint_dir = "my_datasets/my_checkpoint/"
 
-    """
-    if local_False_databricks_True == False:
-        source_dir = my_local_path + source_dir
-        monitoring_dir = my_local_path + monitoring_dir
-        checkpoint_dir = my_local_path + checkpoint_dir
-    else:
-        source_dir = my_databricks_path + source_dir
-        monitoring_dir = my_databricks_path + monitoring_dir
-        checkpoint_dir = my_databricks_path + checkpoint_dir
-    """
+    #if local_False_databricks_True == False:
+    #    source_dir = my_local_path + source_dir
+    #    monitoring_dir = my_local_path + monitoring_dir
+    #    checkpoint_dir = my_local_path + checkpoint_dir
+    #else:
+    #    source_dir = my_databricks_path + source_dir
+    #    monitoring_dir = my_databricks_path + monitoring_dir
+    #    checkpoint_dir = my_databricks_path + checkpoint_dir
+
     # 4. We remove the directories
     if local_False_databricks_True == False:
         # 4.1. We remove the monitoring_dir
@@ -332,14 +327,13 @@ if __name__ == '__main__':
         # 4.2. We remove the checkpoint_dir
         if os.path.exists(checkpoint_dir):
             shutil.rmtree(checkpoint_dir)
-    """
-    else:
-        # 4.1. We remove the monitoring_dir
-        dbutils.fs.rm(monitoring_dir, True)
+    #else:
+    #    # 4.1. We remove the monitoring_dir
+    #    dbutils.fs.rm(monitoring_dir, True)
 
         # 4.2. We remove the checkpoint_dir
-        dbutils.fs.rm(checkpoint_dir, True)
-    """
+    #    dbutils.fs.rm(checkpoint_dir, True)
+
     # 5. We re-create the directories again
     if local_False_databricks_True == False:
         # 5.1. We re-create the monitoring_dir
@@ -347,14 +341,13 @@ if __name__ == '__main__':
 
         # 5.2. We re-create the checkpoint_dir
         os.mkdir(checkpoint_dir)
-    """
-    else:
+    #else:
         # 5.1. We re-create the monitoring_dir
-        dbutils.fs.mkdirs(monitoring_dir)
+        #dbutils.fs.mkdirs(monitoring_dir)
 
         # 5.2. We re-create the checkpoint_dir
-        dbutils.fs.mkdirs(checkpoint_dir)
-    """
+        #dbutils.fs.mkdirs(checkpoint_dir)
+
     # 6. We configure the Spark Context
     sc = pyspark.SparkContext.getOrCreate()
     sc.setLogLevel('WARN')
@@ -368,9 +361,6 @@ if __name__ == '__main__':
             checkpoint_dir,
             time_step_interval,
             verbose,
-            north,
-            east,
-            south,
-            west,
-            hours_list
+            current_time,
+            seconds_horizon
            )
