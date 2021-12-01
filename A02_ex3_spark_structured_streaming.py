@@ -86,9 +86,9 @@ def my_model(spark,
     groupedDF = filteredSDF.withWatermark("my_time", "0 seconds") \
     			    .groupBy(pyspark.sql.functions.window("my_time", my_frequency, my_frequency),
     			             pyspark.sql.functions.col("closerStopID"))\
-                           .agg(f.approx_count_distinct("vehicleID").alias("numVehicless"))
+                           .agg(f.approx_count_distinct("vehicleID").alias("numVehicles"))
     
-    solutionSDF = groupedDF.select(f.col("closerStopID").alias("stationID"),f.col("numVehicless"))
+    solutionSDF = groupedDF.select(f.col("closerStopID").alias("stationID"),f.col("numVehicles"))
     # ---------------------------------------
 
     # Operation O1: We create the DataStreamWritter, to print by console the results in complete mode
