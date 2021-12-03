@@ -73,21 +73,30 @@ def my_model(spark,
                             .withColumn("arrivalTime",f.date_format(inputSDF["date"],"HH:mm:ss"))
 
     # Apply first filtering on date, vechile id, and atStop
-    filteredSDF = time_inputSDF.withWatermark("my_time", "0 seconds") \
-    			       .select(f.col("arrivalTime"),\
+    filteredSDF = time_inputSDF.select(f.col("arrivalTime"),\
                                       f.col("busLineID").alias("lineID"),\
                                       f.col("closerStopID").alias("stationID"),\
                                       f.col("my_time"))\
                               .where((f.col("atStop") != 0) & \
                                      (f.col("vehicleID") == vehicle_id) &                                            
                                      (f.to_date(f.lit(day_picked),"yyyy-MM-dd") == f.to_date(time_inputSDF["date"],"yyyy-MM-dd HH:mm:ss")) )
+                                     
+    appendSDF = filteredSDF.select(f.col("my_time"), f.col("arrivalTime"), f.col("lineID"), f.col("stationID"))                                  
+                                     
+    groupedSDF = filteredSDF.withWatermark("my_time", "0 seconds") \
+    			    .groupBy(pyspark.sql.functions.window("my_time", my_window_duration_frequency, my_frequency),f.col("arrivalTime"), f.col("lineID"), f.col("stationID"))\
+    					     .agg({})
 
-    solutionSDF = filteredSDF.select(f.col("arrivalTime"),f.col("lineID"),f.col("stationID"))
-
+    solutionSDF = groupedSDF.select(f.col("arrivalTime"),f.col("lineID"),f.col("stationID"))
+    
     # ---------------------------------------
-
+    def funct(batch_df, batch_id):
+       print(batch_id)
+       
+    
     # Operation O1: We create the DataStreamWritter, to print by console the results in complete mode
-    myDSW = solutionSDF.writeStream\
+    myDSW = groupedSDF.writeStream\
+                      .foreachBatch(funct) \
                        .format("console") \
                        .trigger(processingTime=my_frequency) \
                        .option("checkpointLocation", checkpoint_dir) \
