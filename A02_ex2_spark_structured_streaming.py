@@ -1,3 +1,6 @@
+# Gyanendar Manohar
+# R00207241
+# Assignment #2
 # --------------------------------------------------------
 #
 # PYTHON PROGRAM DEFINITION
@@ -69,34 +72,90 @@ def my_model(spark,
                                .load(monitoring_dir)
 
     # 4. Operation T1: We add the current timestamp
+    # Add new column arrivalTime in format HH:mm:ss
+    # This is needed in final output
     time_inputSDF = inputSDF.withColumn("my_time", pyspark.sql.functions.current_timestamp())\
                             .withColumn("arrivalTime",f.date_format(inputSDF["date"],"HH:mm:ss"))
 
     # Apply first filtering on date, vechile id, and atStop
+    # atStop shouln't be 0
+    # vehicleID should match with the provided input parameter
+    # date should match
+    #
+    # Keep necessary columns and discrad the rest
+    #
     filteredSDF = time_inputSDF.select(f.col("arrivalTime"),\
                                       f.col("busLineID").alias("lineID"),\
                                       f.col("closerStopID").alias("stationID"),\
                                       f.col("my_time"))\
                               .where((f.col("atStop") != 0) & \
                                      (f.col("vehicleID") == vehicle_id) &                                            
-                                     (f.to_date(f.lit(day_picked),"yyyy-MM-dd") == f.to_date(time_inputSDF["date"],"yyyy-MM-dd HH:mm:ss")) )
-                                     
-    appendSDF = filteredSDF.select(f.col("my_time"), f.col("arrivalTime"), f.col("lineID"), f.col("stationID"))                                  
-                                     
-    groupedSDF = filteredSDF.withWatermark("my_time", "0 seconds") \
-    			    .groupBy(pyspark.sql.functions.window("my_time", my_window_duration_frequency, my_frequency),f.col("arrivalTime"), f.col("lineID"), f.col("stationID"))\
-    					     .agg({})
-
-    solutionSDF = groupedSDF.select(f.col("arrivalTime"),f.col("lineID"),f.col("stationID"))
+                                     (f.to_date(f.lit(day_picked),"yyyy-MM-dd") == \
+                                      f.to_date(time_inputSDF["date"],"yyyy-MM-dd HH:mm:ss")) )
     
+    # Adding new column   timeLineStationID by concatenating arrivalTime, lineID & stationID                               
+    
+       
+    # Now need to do gorupby and for that watermarking is prerequisite
+    # do watermarking and groupby on my_time
+    #
+    # Generating new column on fly by appending arrivalTime,Lineid,stationID and collecting this in set
+    # the collected set will have data like ['10:14:00,72,750', '09:16:00,72,900', '10:12:00,50,450', '10:09:00,50,279', '10:15:00,72,750']
+    
+    groupedSDF = filteredSDF.withWatermark("my_time", "0 seconds") \
+    			     .groupBy(pyspark.sql.functions.window("my_time", my_window_duration_frequency, my_frequency))\
+    			     .agg(f.collect_set(f.concat(f.col("arrivalTime"),
+    			                                 f.lit(','), 
+    			                                 f.col("lineID"),
+    			                                 f.lit(','),
+    			                                 f.col("stationID"))).alias("timeLineStationID"))
+    
+    # Create udf for sorting list 
+    def sort_list(string_list):
+        
+        string_list.sort()
+        
+        return string_list
+                
+    #Register the UDF        
+    getlist_udf = f.udf(sort_list, pyspark.sql.types.ArrayType(pyspark.sql.types.StringType()))
+    
+    # pass the new column timeLineStationID to defned UDF sorted_list which will sort the parameter passed to it
+    # as content of list is string starting with time stamp, the sortlist will have item in sorted order as per time
+    
+    sortedListSDF = groupedSDF.select(getlist_udf(groupedSDF['timeLineStationID']).alias('timeLineStationID'))
+    
+    # Now need to form column from list 
+    # Explode will do this job 
+    
+    explodeSDF = sortedListSDF.withColumn("combinedCol",f.explode(f.col('timeLineStationID')))\
+                          .drop('timeLineStationID')
+    
+    # FInal output should have three colum
+    # Split the combinedcol and give name to it based on content
+    solutionSDF =  explodeSDF.select(f.split(f.col('combinedCol'),',').getItem(0).alias("arrival_time"),
+                                     f.split(f.col('combinedCol'),',').getItem(1).alias("lineID"),
+                                     f.split(f.col('combinedCol'),',').getItem(2).alias("stationID"))
+    
+    
+    # I got correct output once in 10 run. For rest nine runs, I see multple group per batch 
+	#-------------------------------------------                                     
+	#Batch: 2
+	#-------------------------------------------
+	#+--------------------+--------------------+
+	#|              window|   timeLineStationID|
+	#+--------------------+--------------------+
+	#|{2021-12-05 05:51...|[08:14:00,72,750,...|
+	#|{2021-12-05 05:51...|[08:14:00,72,750,...|
+	#+--------------------+--------------------+
+    # This caused repeated content in the final output. This problem is realted to timing and I am not able to do much here
+    # Output is not consistent across run
     # ---------------------------------------
-    def funct(batch_df, batch_id):
-       print(batch_id)
+    
        
     
     # Operation O1: We create the DataStreamWritter, to print by console the results in complete mode
-    myDSW = groupedSDF.writeStream\
-                      .foreachBatch(funct) \
+    myDSW = solutionSDF.writeStream\
                        .format("console") \
                        .trigger(processingTime=my_frequency) \
                        .option("checkpointLocation", checkpoint_dir) \
